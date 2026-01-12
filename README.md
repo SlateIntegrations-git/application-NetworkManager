@@ -1,2 +1,2 @@
 # application-NetworkManager
-Slate NIC, Console, and Route Manager
+Slate NIC, Console, Route Manager, and File Transfer
