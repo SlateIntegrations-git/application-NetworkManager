@@ -29,6 +29,16 @@ try:
 except ImportError:
     HAS_PYSERIAL = False
 
+try:
+    import paramiko
+    HAS_PARAMIKO = True
+except ImportError:
+    HAS_PARAMIKO = False
+
+import ftplib
+import socket
+from tkinter import filedialog
+
 APP_TITLE = "Slate Integrations - IP Manager"
 ADDED_ROUTES_FILE = "added_routes.json"
 LOG_FILE = "route_manager.log"
@@ -549,9 +559,14 @@ class RouteManagerApp:
         self.main_tabs["console"] = console_tab
         
         nic_tab = tk.Label(main_tabs_frame, text="NIC Config", bg=BG_DARK, fg=TEXT_GRAY, font=("Segoe UI", 11), padx=20, pady=10, cursor="hand2")
-        nic_tab.pack(side=tk.LEFT, padx=(0, 20))
+        nic_tab.pack(side=tk.LEFT, padx=(0, 5))
         nic_tab.bind("<Button-1>", lambda e: self.switch_main_view("nic"))
         self.main_tabs["nic"] = nic_tab
+        
+        transfer_tab = tk.Label(main_tabs_frame, text="File Transfer", bg=BG_DARK, fg=TEXT_GRAY, font=("Segoe UI", 11), padx=20, pady=10, cursor="hand2")
+        transfer_tab.pack(side=tk.LEFT, padx=(0, 20))
+        transfer_tab.bind("<Button-1>", lambda e: self.switch_main_view("transfer"))
+        self.main_tabs["transfer"] = transfer_tab
         
         self.tab_buttons = {}
         self.route_tabs_frame = tk.Frame(controls_frame, bg=BG_DARK)
@@ -698,6 +713,123 @@ class RouteManagerApp:
         self.nic_tree.bind("<Double-1>", self.show_nic_config_dialog)
         
         self.nic_configs = []
+        
+        self.transfer_view = tk.Frame(self.content_frame, bg=BG_DARK)
+        
+        transfer_header = tk.Frame(self.transfer_view, bg=BG_DARK)
+        transfer_header.pack(fill=tk.X, pady=(0, 15))
+        
+        tk.Label(transfer_header, text="File Transfer", bg=BG_DARK, fg=TEXT_WHITE, font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT)
+        
+        sftp_status = "Available" if HAS_PARAMIKO else "Install paramiko for SFTP/SCP"
+        status_color = ACCENT_TEAL if HAS_PARAMIKO else TEXT_MUTED
+        tk.Label(transfer_header, text=sftp_status, bg=BG_DARK, fg=status_color, font=("Segoe UI", 10)).pack(side=tk.RIGHT)
+        
+        transfer_main = tk.Frame(self.transfer_view, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        transfer_main.pack(fill=tk.BOTH, expand=True)
+        
+        transfer_canvas = tk.Canvas(transfer_main, bg=BG_CARD, highlightthickness=0)
+        transfer_scrollbar = ttk.Scrollbar(transfer_main, orient=tk.VERTICAL, command=transfer_canvas.yview)
+        self.transfer_scroll_frame = tk.Frame(transfer_canvas, bg=BG_CARD)
+        
+        self.transfer_scroll_frame.bind("<Configure>", lambda e: transfer_canvas.configure(scrollregion=transfer_canvas.bbox("all")))
+        transfer_canvas.create_window((0, 0), window=self.transfer_scroll_frame, anchor="nw")
+        transfer_canvas.configure(yscrollcommand=transfer_scrollbar.set)
+        
+        transfer_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        transfer_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        def _on_mousewheel(event):
+            transfer_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        transfer_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        inner_frame = tk.Frame(self.transfer_scroll_frame, bg=BG_CARD)
+        inner_frame.pack(fill=tk.X, padx=25, pady=20)
+        
+        conn_frame = tk.Frame(inner_frame, bg=BG_CARD)
+        conn_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        tk.Label(conn_frame, text="Connection Settings", bg=BG_CARD, fg=TEXT_WHITE, font=("Segoe UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 15))
+        
+        protocol_row = tk.Frame(conn_frame, bg=BG_CARD)
+        protocol_row.pack(fill=tk.X, pady=5)
+        tk.Label(protocol_row, text="Protocol", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        
+        self.transfer_protocol_var = tk.StringVar(value="FTP")
+        protocols = ["FTP", "TFTP", "SFTP", "SCP"]
+        protocol_combo = ttk.Combobox(protocol_row, textvariable=self.transfer_protocol_var, values=protocols, state="readonly", width=15)
+        protocol_combo.pack(side=tk.LEFT, padx=(10, 0))
+        
+        host_row = tk.Frame(conn_frame, bg=BG_CARD)
+        host_row.pack(fill=tk.X, pady=5)
+        tk.Label(host_row, text="Host", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_host_entry = tk.Entry(host_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=30)
+        self.transfer_host_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        
+        port_row = tk.Frame(conn_frame, bg=BG_CARD)
+        port_row.pack(fill=tk.X, pady=5)
+        tk.Label(port_row, text="Port", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_port_entry = tk.Entry(port_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=10)
+        self.transfer_port_entry.insert(0, "21")
+        self.transfer_port_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        
+        user_row = tk.Frame(conn_frame, bg=BG_CARD)
+        user_row.pack(fill=tk.X, pady=5)
+        tk.Label(user_row, text="Username", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_user_entry = tk.Entry(user_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=20)
+        self.transfer_user_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        
+        pass_row = tk.Frame(conn_frame, bg=BG_CARD)
+        pass_row.pack(fill=tk.X, pady=5)
+        tk.Label(pass_row, text="Password", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_pass_entry = tk.Entry(pass_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=20, show="*")
+        self.transfer_pass_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        
+        def update_default_port(*args):
+            proto = self.transfer_protocol_var.get()
+            ports = {"FTP": "21", "TFTP": "69", "SFTP": "22", "SCP": "22"}
+            self.transfer_port_entry.delete(0, tk.END)
+            self.transfer_port_entry.insert(0, ports.get(proto, "21"))
+        
+        self.transfer_protocol_var.trace_add("write", update_default_port)
+        
+        files_frame = tk.Frame(inner_frame, bg=BG_CARD)
+        files_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        tk.Label(files_frame, text="File Selection", bg=BG_CARD, fg=TEXT_WHITE, font=("Segoe UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 15))
+        
+        local_row = tk.Frame(files_frame, bg=BG_CARD)
+        local_row.pack(fill=tk.X, pady=5)
+        tk.Label(local_row, text="Local File", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_local_entry = tk.Entry(local_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=40)
+        self.transfer_local_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        SlateButton(local_row, "Browse", command=self.browse_local_file, style="outline", width=80, height=36).pack(side=tk.LEFT, padx=(10, 0))
+        
+        remote_row = tk.Frame(files_frame, bg=BG_CARD)
+        remote_row.pack(fill=tk.X, pady=5)
+        tk.Label(remote_row, text="Remote Path", bg=BG_CARD, fg=TEXT_GRAY, font=("Segoe UI", 10), width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.transfer_remote_entry = tk.Entry(remote_row, bg=BG_DARK, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=40)
+        self.transfer_remote_entry.pack(side=tk.LEFT, ipady=8, padx=(10, 0))
+        SlateButton(remote_row, "Browse", command=self.browse_remote_file, style="outline", width=80, height=36).pack(side=tk.LEFT, padx=(10, 0))
+        
+        actions_frame = tk.Frame(inner_frame, bg=BG_CARD)
+        actions_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        SlateButton(actions_frame, "Upload", command=self.do_upload, style="filled", width=120, height=42).pack(side=tk.LEFT, padx=(0, 15))
+        SlateButton(actions_frame, "Download", command=self.do_download, style="filled", width=120, height=42).pack(side=tk.LEFT, padx=(0, 15))
+        SlateButton(actions_frame, "Test Connection", command=self.test_connection, style="outline", width=140, height=42).pack(side=tk.LEFT)
+        
+        log_frame = tk.Frame(inner_frame, bg=BG_CARD)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(20, 0))
+        
+        tk.Label(log_frame, text="Transfer Log", bg=BG_CARD, fg=TEXT_WHITE, font=("Segoe UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 10))
+        
+        self.transfer_log = tk.Text(log_frame, bg=BG_DARK, fg=TEXT_WHITE, font=("Consolas", 10), height=10, relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, state=tk.DISABLED)
+        self.transfer_log.pack(fill=tk.BOTH, expand=True)
+        
+        self.transfer_log.tag_configure("info", foreground=TEXT_GRAY)
+        self.transfer_log.tag_configure("success", foreground=ACCENT_TEAL)
+        self.transfer_log.tag_configure("error", foreground="#ef4444")
     
     def switch_main_view(self, view: str):
         self.current_view = view
@@ -711,6 +843,7 @@ class RouteManagerApp:
         self.routes_view.pack_forget()
         self.console_view.pack_forget()
         self.nic_view.pack_forget()
+        self.transfer_view.pack_forget()
         self.route_tabs_frame.pack_forget()
         
         if view == "routes":
@@ -722,6 +855,8 @@ class RouteManagerApp:
         elif view == "nic":
             self.nic_view.pack(fill=tk.BOTH, expand=True)
             self.refresh_nic_configs()
+        elif view == "transfer":
+            self.transfer_view.pack(fill=tk.BOTH, expand=True)
     
     def refresh_serial_ports(self):
         self.serial_ports = discover_serial_ports()
@@ -764,6 +899,243 @@ class RouteManagerApp:
         
         if port_info:
             SerialTerminal(self.root, port_info)
+    
+    def log_transfer(self, message: str, tag: str = "info"):
+        self.transfer_log.configure(state=tk.NORMAL)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.transfer_log.insert(tk.END, f"[{timestamp}] {message}\n", tag)
+        self.transfer_log.see(tk.END)
+        self.transfer_log.configure(state=tk.DISABLED)
+    
+    def browse_local_file(self):
+        filename = filedialog.askopenfilename(title="Select Local File")
+        if filename:
+            self.transfer_local_entry.delete(0, tk.END)
+            self.transfer_local_entry.insert(0, filename)
+    
+    def browse_remote_file(self):
+        protocol = self.transfer_protocol_var.get()
+        host = self.transfer_host_entry.get().strip()
+        
+        if not host:
+            messagebox.showerror("Error", "Enter host address first")
+            return
+        
+        self.show_remote_browser_dialog()
+    
+    def show_remote_browser_dialog(self):
+        dialog = self.create_dialog("Remote File Browser", 500, 400)
+        
+        tk.Label(dialog, text="Enter remote path manually:", bg=BG_DARK, fg=TEXT_GRAY, font=("Segoe UI", 10)).pack(pady=(0, 10))
+        
+        path_entry = tk.Entry(dialog, bg=BG_CARD, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, font=("Segoe UI", 11), relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightthickness=1, width=50)
+        path_entry.pack(ipady=8, padx=30)
+        path_entry.insert(0, "/")
+        
+        def use_path():
+            path = path_entry.get().strip()
+            if path:
+                self.transfer_remote_entry.delete(0, tk.END)
+                self.transfer_remote_entry.insert(0, path)
+                dialog.destroy()
+        
+        btn_frame = tk.Frame(dialog, bg=BG_DARK)
+        btn_frame.pack(pady=20)
+        SlateButton(btn_frame, "Use Path", command=use_path, style="filled", width=100, height=40).pack(side=tk.LEFT, padx=10)
+        SlateButton(btn_frame, "Cancel", command=dialog.destroy, style="outline", width=100, height=40).pack(side=tk.LEFT, padx=10)
+    
+    def get_transfer_settings(self):
+        return {
+            'protocol': self.transfer_protocol_var.get(),
+            'host': self.transfer_host_entry.get().strip(),
+            'port': int(self.transfer_port_entry.get().strip() or "21"),
+            'username': self.transfer_user_entry.get().strip(),
+            'password': self.transfer_pass_entry.get(),
+            'local_file': self.transfer_local_entry.get().strip(),
+            'remote_path': self.transfer_remote_entry.get().strip()
+        }
+    
+    def test_connection(self):
+        settings = self.get_transfer_settings()
+        
+        if not settings['host']:
+            messagebox.showerror("Error", "Host address required")
+            return
+        
+        self.log_transfer(f"Testing {settings['protocol']} connection to {settings['host']}:{settings['port']}...", "info")
+        
+        def do_test():
+            try:
+                if settings['protocol'] == "FTP":
+                    ftp = ftplib.FTP()
+                    ftp.connect(settings['host'], settings['port'], timeout=10)
+                    if settings['username']:
+                        ftp.login(settings['username'], settings['password'])
+                    else:
+                        ftp.login()
+                    ftp.quit()
+                    self.root.after(0, lambda: self.log_transfer("FTP connection successful!", "success"))
+                
+                elif settings['protocol'] == "TFTP":
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.settimeout(5)
+                    sock.connect((settings['host'], settings['port']))
+                    sock.close()
+                    self.root.after(0, lambda: self.log_transfer("TFTP port reachable (UDP)", "success"))
+                
+                elif settings['protocol'] in ["SFTP", "SCP"]:
+                    if not HAS_PARAMIKO:
+                        self.root.after(0, lambda: self.log_transfer("paramiko not installed. Run: pip install paramiko", "error"))
+                        return
+                    
+                    transport = paramiko.Transport((settings['host'], settings['port']))
+                    transport.connect(username=settings['username'], password=settings['password'])
+                    transport.close()
+                    self.root.after(0, lambda: self.log_transfer(f"{settings['protocol']} connection successful!", "success"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.log_transfer(f"Connection failed: {e}", "error"))
+        
+        threading.Thread(target=do_test, daemon=True).start()
+    
+    def do_upload(self):
+        settings = self.get_transfer_settings()
+        
+        if not settings['host']:
+            messagebox.showerror("Error", "Host address required")
+            return
+        if not settings['local_file']:
+            messagebox.showerror("Error", "Local file required")
+            return
+        if not os.path.exists(settings['local_file']):
+            messagebox.showerror("Error", "Local file not found")
+            return
+        
+        remote_path = settings['remote_path'] or os.path.basename(settings['local_file'])
+        self.log_transfer(f"Uploading {os.path.basename(settings['local_file'])} to {settings['host']}...", "info")
+        
+        def do_transfer():
+            try:
+                if settings['protocol'] == "FTP":
+                    ftp = ftplib.FTP()
+                    ftp.connect(settings['host'], settings['port'], timeout=30)
+                    if settings['username']:
+                        ftp.login(settings['username'], settings['password'])
+                    else:
+                        ftp.login()
+                    
+                    with open(settings['local_file'], 'rb') as f:
+                        ftp.storbinary(f"STOR {remote_path}", f)
+                    ftp.quit()
+                    self.root.after(0, lambda: self.log_transfer("Upload complete!", "success"))
+                
+                elif settings['protocol'] == "TFTP":
+                    self.root.after(0, lambda: self.log_transfer("TFTP upload requires tftpy library", "error"))
+                
+                elif settings['protocol'] == "SFTP":
+                    if not HAS_PARAMIKO:
+                        self.root.after(0, lambda: self.log_transfer("paramiko not installed", "error"))
+                        return
+                    
+                    transport = paramiko.Transport((settings['host'], settings['port']))
+                    transport.connect(username=settings['username'], password=settings['password'])
+                    sftp = paramiko.SFTPClient.from_transport(transport)
+                    sftp.put(settings['local_file'], remote_path)
+                    sftp.close()
+                    transport.close()
+                    self.root.after(0, lambda: self.log_transfer("SFTP upload complete!", "success"))
+                
+                elif settings['protocol'] == "SCP":
+                    if not HAS_PARAMIKO:
+                        self.root.after(0, lambda: self.log_transfer("paramiko not installed", "error"))
+                        return
+                    
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    ssh.connect(settings['host'], settings['port'], settings['username'], settings['password'])
+                    sftp = ssh.open_sftp()
+                    sftp.put(settings['local_file'], remote_path)
+                    sftp.close()
+                    ssh.close()
+                    self.root.after(0, lambda: self.log_transfer("SCP upload complete!", "success"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.log_transfer(f"Upload failed: {e}", "error"))
+        
+        threading.Thread(target=do_transfer, daemon=True).start()
+    
+    def do_download(self):
+        settings = self.get_transfer_settings()
+        
+        if not settings['host']:
+            messagebox.showerror("Error", "Host address required")
+            return
+        if not settings['remote_path']:
+            messagebox.showerror("Error", "Remote path required")
+            return
+        
+        local_file = settings['local_file']
+        if not local_file:
+            local_file = filedialog.asksaveasfilename(
+                title="Save Downloaded File",
+                initialfile=os.path.basename(settings['remote_path'])
+            )
+            if not local_file:
+                return
+            self.transfer_local_entry.delete(0, tk.END)
+            self.transfer_local_entry.insert(0, local_file)
+        
+        self.log_transfer(f"Downloading {settings['remote_path']} from {settings['host']}...", "info")
+        
+        def do_transfer():
+            try:
+                if settings['protocol'] == "FTP":
+                    ftp = ftplib.FTP()
+                    ftp.connect(settings['host'], settings['port'], timeout=30)
+                    if settings['username']:
+                        ftp.login(settings['username'], settings['password'])
+                    else:
+                        ftp.login()
+                    
+                    with open(local_file, 'wb') as f:
+                        ftp.retrbinary(f"RETR {settings['remote_path']}", f.write)
+                    ftp.quit()
+                    self.root.after(0, lambda: self.log_transfer(f"Downloaded to {local_file}", "success"))
+                
+                elif settings['protocol'] == "TFTP":
+                    self.root.after(0, lambda: self.log_transfer("TFTP download requires tftpy library", "error"))
+                
+                elif settings['protocol'] == "SFTP":
+                    if not HAS_PARAMIKO:
+                        self.root.after(0, lambda: self.log_transfer("paramiko not installed", "error"))
+                        return
+                    
+                    transport = paramiko.Transport((settings['host'], settings['port']))
+                    transport.connect(username=settings['username'], password=settings['password'])
+                    sftp = paramiko.SFTPClient.from_transport(transport)
+                    sftp.get(settings['remote_path'], local_file)
+                    sftp.close()
+                    transport.close()
+                    self.root.after(0, lambda: self.log_transfer(f"SFTP downloaded to {local_file}", "success"))
+                
+                elif settings['protocol'] == "SCP":
+                    if not HAS_PARAMIKO:
+                        self.root.after(0, lambda: self.log_transfer("paramiko not installed", "error"))
+                        return
+                    
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    ssh.connect(settings['host'], settings['port'], settings['username'], settings['password'])
+                    sftp = ssh.open_sftp()
+                    sftp.get(settings['remote_path'], local_file)
+                    sftp.close()
+                    ssh.close()
+                    self.root.after(0, lambda: self.log_transfer(f"SCP downloaded to {local_file}", "success"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.log_transfer(f"Download failed: {e}", "error"))
+        
+        threading.Thread(target=do_transfer, daemon=True).start()
     
     def refresh_nic_configs(self):
         self.nic_configs = self.discover_nic_configs()
