@@ -8,3 +8,10 @@ Run these in command prompt or powershell as admin
 ```
 pip install pyinstaller pyserial paramiko
 ```
+
+
+***RUNNING THE APPLICATION***
+1. Put main.py in a folder on your computer
+2. Run command prompt or powershell as admin
+3. Navigate to the main.py
+4. run the app via: ``` python main.py ```
